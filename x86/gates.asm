@@ -11,11 +11,17 @@ section .data
   align 16
   one_state dq 0.0, 1.0
   align 16 
-  const dq 1.0, -1.0   ; For Pauli-Z and controlled-Z gates (flip the second component)
+  const dq 1.0, -1.0   ; For (basic) Pauli-Z and controlled-Z gates (flip the second component)
   align 16
   neg_imag dq 0.0, -1.0, 1.0, 0.0   ; For multiplying by -i and i in Pauli-Y gate
   one dq 1.0
   zero dq 0.0
+  align 16
+  negOne_one dq -1.0, 1.0
+  align 16
+  const_negOne dq -1.0, -1.0
+
+
 
 section .text
   global _QuantumCircuit
@@ -53,93 +59,88 @@ done:
   ret
 
 _PX:
-  ; Pauli-X Quantum Gate
-  MOVAPD XMM0, [RDI]            ; Load qubit
-  SHUFPD XMM0, XMM0, 01b        ; Swap qubit[0] and qubit[1]
-  MOVAPD [RDI], XMM0            ; Store the swapped qubit back
+  ; Pauli-X Quantum Gate: applies the Pauli X on the input qubit described by two complex numbers
+  MOVAPD XMM0, [RDI] 		; XMM0 = (alpha_real, alpha_imag)
+  MOVAPD XMM1, [RDI + 16]	; XMM1 = (beta_real, beta_imag)
+  MOVAPD [RDI], XMM1		; Switch
+  MOVAPD [RDI+16], XMM0
+  RET
+
+_PX_basic:
+  ; Pauli-X Quantum Gate: applies the Pauli X on the input qubit described by two real numbers
+  MOVAPD XMM0, [RDI]		; XMM0 = [q[0], q[1]]
+  SHUFPD XMM0, XMM0, 01b	; XMM0 = [q[1], q[0]]
+  MOVAPD [RDI], XMM0		; Store back and return
   RET
 
 _PZ:
-  ; Pauli-Z Quantum Gate
-  MOVAPD XMM0, [RDI]            ; Load qubit
-  MULPD XMM0, [const]           ; Apply Pauli-Z gate (flip the phase of qubit[1])
-  MOVAPD [RDI], XMM0            ; Store result back to qubit
+  ; Pauli-Z Quantum Gate: applies the Pauli Z on the input qubit described by two complex numbers
+  MOVAPD XMM0, [RDI+16]  	; XMM0 = (beta_real, beta_imag) 
+  MULPD XMM0, [const_negOne] 	; XMM0 = (-beta_real, -beta_imag)
+  MOVAPD [RDI+16], XMM0		; Store back and return
+  RET
+
+_PZ_basic:
+  ; Pauli-Z Quantum Gate: applies the Pauli Z on the input qubit described by two real numbers
+  MOVAPD XMM0, [RDI]		; XMM0 = [q[0], q[1]]
+  MULPD XMM0, [const]		; XMM0 = [q[0], -q[1]]
+  MOVAPD [RDI], XMM0		; Store back and return
   RET
 
 _PY:
-  ; Pauli-Y Quantum Gate
-  MOVAPD XMM0, [RDI]            ; Load qubit
-  MOVAPD XMM1, [RDI + 16]       ; Get second part of the qubit
-  SHUFPD XMM2, XMM1, 01b        ; Flip to work on the imaginary part
-  MULPD XMM2, [neg_imag]        ; Multiply by -i
-  SHUFPD XMM3, XMM0, 01b        ; Flip real to imaginary part
-  MULPD XMM3, [neg_imag]        ; Multiply by i
-  MOVAPD [RDI], XMM2            ; Store the real part
-  MOVAPD [RDI + 16], XMM3       ; Store the imaginary part
+  ; Pauli-Y Quantum Gate: applies the Pauli Y on the input qubit described by two complex numbers
+  MOVAPD XMM0, [RDI]       	; XMM0 = (alpha_real, alpha_imag)
+  MOVAPD XMM1, [RDI + 16]  	; XMM1 = (beta_real, beta_imag)
+
+  ; After Pauli-Y: qubit = [ (beta_imag, -beta_real), (-alpha_imag, alpha_real) ]  
+
+  SHUFPD XMM1, XMM1, 01b	; XMM1 = (beta_imag, beta_real)
+  MULPD  XMM1, [const] 		; XMM1 = (beta_imag, -beta_real)
+
+  SHUFPD XMM0, XMM0, 01b 	; XMM0 = (alpha_imag, alpha_real)
+  MULPD  XMM0, [negOne_one]	; XMM0 = (-alpha_imag, alpha_real)
+
+  MOVAPD [RDI], XMM1		; Store back and return
+  MOVAPD [RDI + 16], XMM0
   RET
 
 _H:
-  SHL RDI, 5                    ; rdi = qubit_index * 32 (offset in bytes)
-  ADD RDI, RSI                  ; rdi = address of target qubit (qubits + offset)
+  ; Hadamard Quantum Gate: applies Hadamard on the input qubit described by two complex numbers
+  MOVAPD XMM0, [RDI]       	; XMM0 = (alpha_real, alpha_imag)
+  MOVAPD XMM1, [RDI + 16]  	; XMM1 = (beta_real, beta_imag)
 
-  MOVQ XMM0, qword [rdi]        ; Load a_real
-  MOVQ XMM1, qword [rdi+8]      ; Load a_imag
-  MOVQ XMM2, qword [rdi+16]     ; Load b_real
-  MOVQ XMM3, qword [rdi+24]     ; Load b_imag
+  ; After Hadamad: qubit = [ (alpha_real + beta_real, alpha_imag + beta_imag), (alpha_real - beta_real, alpha_imag - beta_imag) ]
 
-  ADDPD XMM0, XMM2              ; (a_real + b_real), (a_imag + b_imag)
-  ADDPD XMM2, XMM0              ; (a_real - b_real), (a_imag - b_imag)
+  MOVAPD XMM2, XMM0		; XMM2 = (alpha_real, alpha_imag)
+  ADDPD XMM2, XMM1		; XMM2 = (alpha_real + beta_real, alpha_imag + beta_imag)
 
-  MOVQ XMM4, qword [sqrt2_inv]
-  MULPD XMM0, XMM4           
-  MULPD XMM2, XMM4           
+  SUBPD XMM0, XMM1		; XMM0 = (alpha_real - beta_real, alpha_imag - beta_imag)
 
-  MOVQ qword [rdi], XMM0        ; Store updated 
-  MOVQ qword [rdi+8], XMM1   
-  MOVQ qword [rdi+16], XMM2  
-  MOVQ qword [rdi+24], XMM3
+  MULPD XMM2, [sqrt2_inv]	; Scale both results by 1/sqrt(2)
+  MULPD XMM0, [sqrt2_inv]
 
+  MOVAPD [RDI], XMM2		; Store back and return
+  MOVAPD [RDI + 16], XMM0
   RET
 
 _H_basic:
-  ; Basic Hadamard gate: applies the Hadamard operation on the input qubit
-  MOVAPD XMM0, [RDI]            ; Load qubit (q[0], q[1])
+  ; Hadamard Quantum Gate: applies Hadamard on the input qubit described by two real numbers
+  MOVAPD XMM0, [RDI]		; XMM0 = [q[0], q[1]]
   MOVAPD XMM1, XMM0
-  MULPD XMM1, [const]           ; XMM1 = [q[0], -q[1]]
-  HADDPD XMM0, XMM1             ; XMM0 = [q[0] + q[1], q[0] - q[1]]
-  MULPD XMM0, [sqrt2_inv]       ; Scale by 1/sqrt(2)
-  MOVAPD [RDI], XMM0            ; Store back to qubit
+  MULPD XMM1, [const] 		; XMM1 = [q[0], -q[1]]
+  HADDPD XMM0, XMM1		; XMM0 = [q[0] + q[1], q[0] - q[1]]
+  MULPD XMM0, [sqrt2_inv]	; Scale by 1/sqrt(2)
+  MOVAPD [RDI], XMM0		; Store back and return
   RET
 
 _CNOT:
-  SHL RDI, 5                    ; rdi = control_index * 32 (offset in bytes)
-  ADD RDI, RDX                  ; rdi = address of control qubit (qubits + offset)
-
-  MOVAPD XMM0, [RDI]            ; control qubit (ca[0], cb[1])
-  ;MOVAPD XMM1, [RDI + 16]      ; target qubit (ta[0], tb[1])
-
-
-  UCOMISS XMM0, [one_state]     ; compare control qubit 1 with |1>
-  JE retcn
-
-  SHL RSI, 5                    ; rdi = control_index * 32 (offset in bytes)
-  ADD RSI, RDX                  ; rdi = address of control qubit (qubits + offset)
- 
-
-  MOVQ XMM0, qword [RDI]        ; Load a_real
-  MOVQ XMM1, qword [RDI+8]      ; Load a_imag
-  MOVQ XMM2, qword [RDI+16]     ; Load b_real
-  MOVQ XMM3, qword [RDI+24]     ; Load b_imag      
-  
-
-  MOVQ qword [RSI], XMM0        ; Store updated 
-  MOVQ qword [RSI+8], XMM1   
-  MOVQ qword [RSI+16], XMM2  
-  MOVQ qword [RSI+24], XMM3
-
+  ; *TO BE APPLIED ON THE ALREADY COMPUTED TENSOR PRODUCT*
+  ; CNOT: loads the last two couples of the tensor product and switches
+  MOVAPD XMM0, [RDI+32]		; XMM0 = [tensor[4], tensor[5]]
+  MOVAPD XMM1, [RDI+48]		; XMM1 = [tensor[6], tensor[7]]
+  MOVAPD [RDI+32], XMM1		; Store back and return
+  MOVAPD [RDI+48], XMM0
 retcn: RET
-
-
 
 _CCNOT:
   ; Controlled-Controlled-NOT Gate (Toffoli gate)
@@ -156,8 +157,7 @@ _CCNOT:
   MOVAPD XMM0, [RDX]            ; Load target qubit
   SHUFPD XMM0, XMM0, 01b        ; Swap target qubit
   MOVAPD [RDX], XMM0            ; Store flipped target qubit back
-retcc:
-  RET
+retcc: RET
 
 _CZ:
   ; Controlled-Z Gate
@@ -169,8 +169,7 @@ _CZ:
   MOVAPD XMM0, [RSI]            ; Load target qubit
   MULPD XMM0, [const]           ; Apply Pauli-Z gate (flip the phase of qubit[1])
   MOVAPD [RSI], XMM0            ; Store updated target qubit back
-retz:
-  RET
+retz: RET
 
 ZERO:
   ; No change to target qubit if control qubits are not both in |1⟩ state
